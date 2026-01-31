@@ -30,7 +30,7 @@ export default {
 
     // Route /mcp to the SecPipe MCP Agent
     if (url.pathname.startsWith("/mcp")) {
-      return SecPipeAgent.mount("/mcp").fetch(request, env, ctx);
+      return SecPipeAgent.mount("/mcp", { binding: "SECPIPE_AGENT" }).fetch(request, env, ctx);
     }
 
     // All other routes go to the GitHub handler (landing page, OAuth)
