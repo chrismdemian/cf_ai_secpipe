@@ -1,74 +1,68 @@
-# SecPipe
+# cf_ai_SecPipe
 
-A remote MCP (Model Context Protocol) server for AI-powered security code review, built on Cloudflare's developer platform.
+An AI-powered security code review application built on Cloudflare's developer platform. Uses **Llama 3.3 70B** to analyze code for vulnerabilities, with intelligent **reachability filtering** to eliminate false positives.
 
-## What It Does
+## Live Demo
 
-SecPipe analyzes code for security vulnerabilities with a key differentiator: **reachability filtering**. While traditional scanners dump 50-200 findings, SecPipe filters down to only the exploitable ones by tracing data flow paths from user input to vulnerable sinks.
+**Deployed URL:** https://secpipe.chrismdemian.workers.dev/mcp
 
-**Example output:**
-```
-8 potential issues found → 3 actually exploitable (62% noise reduction)
-```
+Try it in the [Cloudflare AI Playground](https://playground.ai.cloudflare.com/) - see [Try It Out](#try-it-out) section below.
 
-Each finding includes the exact data flow path showing HOW an attacker could reach the vulnerability.
+## Key Features
+
+- **AI-Powered Analysis**: Uses Llama 3.3 70B to detect SQL injection, XSS, auth issues, secrets, and more
+- **Reachability Filtering**: Traces data flow paths to filter out false positives (typically 40-70% noise reduction)
+- **Human-in-the-Loop**: Workflow pauses for approval before generating remediation code
+- **Auto-Generated Fixes**: AI generates production-ready code fixes for approved vulnerabilities
+- **MCP Integration**: Works with Claude Desktop, Cursor, and other MCP-compatible clients
+
+## Cloudflare Components Used
+
+| Component | Service | Purpose |
+|-----------|---------|---------|
+| **LLM** | Workers AI (Llama 3.3 70B) | Security analysis across 6 specialized stages |
+| **Workflow/Coordination** | Workflows + Durable Objects | 9-stage async pipeline with human approval checkpoint |
+| **User Input** | MCP Protocol (HTTP) | 7 tools for submitting code, checking status, getting results |
+| **Memory/State** | KV Namespace | Persistent storage for reviews, findings, and remediations |
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    MCP Clients                                   │
-│         (Claude Desktop, Cursor, AI Playground)                  │
+│                      MCP Clients                                │
+│           (Claude Desktop, Cursor, AI Playground)               │
 └─────────────────────┬───────────────────────────────────────────┘
-                      │ Streamable HTTP (/mcp)
+                      │ HTTP (/mcp)
                       ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 Cloudflare Worker                                │
+│                   Cloudflare Worker                             │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │              GitHub OAuth Authentication                    │ │
+│  │              GitHub OAuth Authentication                   │ │
 │  └────────────────────────────────────────────────────────────┘ │
-│                      │                                           │
+│                      │                                          │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │              SecPipeAgent (Durable Object)                  │ │
-│  │  • 7 MCP Tools for security review                         │ │
-│  │  • SQLite storage for reviews, findings, remediations      │ │
+│  │            SecPipeAgent (Durable Object)                   │ │
+│  │  • 7 MCP Tools for security review                        │ │
+│  │  • Session management and state                           │ │
 │  └────────────────────────────────────────────────────────────┘ │
-│                      │                                           │
+│                      │                                          │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │           SecurityPipelineWorkflow                          │ │
+│  │           SecurityPipelineWorkflow                         │ │
 │  │  triage → dependency → auth → injection → secrets          │ │
 │  │       → REACHABILITY FILTER → synthesis → remediation      │ │
 │  └────────────────────────────────────────────────────────────┘ │
-│                      │                                           │
+│                      │                                          │
 │  ┌────────────────────────────────────────────────────────────┐ │
-│  │              Workers AI                                     │ │
-│  │              @cf/meta/llama-3.3-70b-instruct-fp8-fast      │ │
+│  │                    Workers AI                              │ │
+│  │           @cf/meta/llama-3.3-70b-instruct-fp8-fast         │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                      │                                          │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │                   KV Namespace                             │ │
+│  │  • Reviews, Findings, Remediations storage                 │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
-## Cloudflare Services Used
-
-| Service | Purpose |
-|---------|---------|
-| **Workers** | HTTP handling, OAuth flow, request routing |
-| **Workers AI** | Llama 3.3 70B for all security analysis |
-| **Durable Objects** | MCP agent state, per-user session isolation |
-| **Durable Object SQL** | Persistent storage for reviews and findings |
-| **Workflows** | Durable async pipeline with human-in-the-loop |
-| **KV** | OAuth state management |
-
-## MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `submit_review` | Submit code for security analysis |
-| `check_status` | Get pipeline progress and current stage |
-| `get_findings` | Retrieve exploitable findings with noise stats |
-| `approve_findings` | Human approval before remediation |
-| `get_remediation` | Get AI-generated fixes for approved findings |
-| `list_reviews` | View history of all reviews |
-| `compare_reviews` | Diff findings between two reviews |
 
 ## Security Pipeline Stages
 
@@ -82,9 +76,21 @@ Each finding includes the exact data flow path showing HOW an attacker could rea
 8. **Approval** - Wait for human review (Workflow pause)
 9. **Remediation** - Generate fixes for approved findings
 
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `submit_review` | Submit code for security analysis |
+| `check_status` | Get pipeline progress and current stage |
+| `get_findings` | Retrieve exploitable findings with noise stats |
+| `approve_findings` | Human approval before remediation |
+| `get_remediation` | Get AI-generated fixes for approved findings |
+| `list_reviews` | View history of all reviews |
+| `compare_reviews` | Diff findings between two reviews |
+
 ## Try It Out
 
-### Option 1: Use Deployed Version
+### Option 1: Use Deployed Version (Recommended)
 
 1. Open [Cloudflare AI Playground](https://playground.ai.cloudflare.com/)
 2. Click "Configure MCP" and add this URL:
@@ -109,9 +115,19 @@ app.get('/user', (req, res) => {
 Call check_status with reviewId "<id-from-step-1>"
 ```
 
-**Step 3 - Get results (when status is "completed" or "awaiting_approval"):**
+**Step 3 - Get findings (when status is "awaiting_approval"):**
 ```
 Call get_findings with reviewId "<id-from-step-1>"
+```
+
+**Step 4 - Approve findings for remediation:**
+```
+Call approve_findings with reviewId "<id>" and findingIds from step 3
+```
+
+**Step 5 - Get generated fixes (wait 10-20 seconds):**
+```
+Call get_remediation with reviewId "<id>"
 ```
 
 ### Option 2: Run Locally
@@ -135,8 +151,8 @@ npx wrangler kv namespace create OAUTH_KV
 # - Callback URL: http://localhost:8787/callback
 
 # Set secrets
-echo "your-client-id" | npx wrangler secret put GITHUB_CLIENT_ID
-echo "your-client-secret" | npx wrangler secret put GITHUB_CLIENT_SECRET
+npx wrangler secret put GITHUB_CLIENT_ID
+npx wrangler secret put GITHUB_CLIENT_SECRET
 
 # Run locally
 npx wrangler dev
@@ -153,6 +169,34 @@ npx wrangler deploy
 # Your MCP server will be at: https://secpipe.<your-subdomain>.workers.dev/mcp
 ```
 
+## Example Output
+
+```
+Input Code:
+  app.get('/user', (req, res) => {
+    const id = req.query.id;
+    db.query(`SELECT * FROM users WHERE id = ${id}`);
+  });
+
+Pipeline Results:
+  ✓ Triage: Mapped 1 source (req.query.id) → 1 sink (db.query)
+  ✓ Injection: Found SQL injection vulnerability
+  ✓ Auth: Missing authentication middleware detected
+  ✓ Reachability: EXPLOITABLE - direct path from user input
+
+Findings: 7 total, 7 exploitable (0% false positives filtered)
+
+Critical Finding: SQL Injection
+  Category: injection
+  Severity: critical
+  Path: req.query.id → template string → db.query()
+
+Remediation Generated:
+  Original: db.query(`SELECT * FROM users WHERE id = ${id}`)
+  Fixed:    db.query('SELECT * FROM users WHERE id = ?', [id])
+  Explanation: Replaced string concatenation with parameterized query.
+```
+
 ## Project Structure
 
 ```
@@ -162,8 +206,7 @@ src/
 ├── pipeline-workflow.ts  # Durable async pipeline
 ├── github-handler.ts     # OAuth authentication
 ├── types.ts              # TypeScript interfaces
-├── schema.ts             # SQL schema
-├── prompts/              # AI system prompts (9 files)
+├── prompts/              # AI system prompts
 │   ├── triage.ts
 │   ├── dependency.ts
 │   ├── auth.ts
@@ -172,7 +215,7 @@ src/
 │   ├── reachability.ts   # Key differentiator
 │   ├── synthesis.ts
 │   └── remediation.ts
-└── stages/               # Pipeline implementations (10 files)
+└── stages/               # Pipeline stage implementations
     ├── triage.ts
     ├── dependency.ts
     ├── auth-analyzer.ts
@@ -184,28 +227,13 @@ src/
     └── utils.ts          # AI helper functions
 ```
 
-## Example Usage
+## Technical Highlights
 
-```
-User: Review this code for security issues:
-
-app.get('/user', (req, res) => {
-  const id = req.query.id;
-  db.query(`SELECT * FROM users WHERE id = ${id}`);
-});
-
-SecPipe: Starting security review...
-  ✓ Triage: Mapped 1 source (req.query.id) → 1 sink (db.query)
-  ✓ Injection: Found SQL injection vulnerability
-  ✓ Reachability: EXPLOITABLE - direct path from user input to query
-
-Results: 1 exploitable finding (no false positives filtered)
-
-Finding: SQL Injection
-  Severity: Critical
-  Path: req.query.id → db.query()
-  No sanitization detected in path.
-```
+- **Llama 3.3 70B**: State-of-the-art open model for security analysis
+- **Durable Workflows**: Pipeline survives Worker restarts, supports human-in-the-loop
+- **KV Storage**: Persistent state for reviews, findings, and remediations across sessions
+- **MCP Protocol**: Standard interface for AI tool integration
+- **Reachability Analysis**: Data flow tracing to eliminate false positives
 
 ## License
 
