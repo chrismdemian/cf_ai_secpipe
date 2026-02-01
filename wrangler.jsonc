@@ -20,11 +20,11 @@
     ]
   },
 
-  // Migrations for Durable Objects (using KV for storage, not SQLite)
+  // Migrations for Durable Objects (required for free plan, but we use KV for actual storage)
   "migrations": [
     {
-      "tag": "v2",
-      "new_classes": ["SecPipeAgent"]
+      "tag": "v1",
+      "new_sqlite_classes": ["SecPipeAgent"]
     }
   ],
 
