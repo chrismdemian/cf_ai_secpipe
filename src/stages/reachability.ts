@@ -51,23 +51,33 @@ export async function runReachabilityFilter(
     reachabilityMap.set(result.id, result);
   }
 
+  // Issue #2 Fix: Categories that should ALWAYS be marked as reachable
+  // Secrets are always exploitable since they're exposed in code regardless of user input
+  const alwaysReachableCategories = new Set(["secrets"]);
+
   // Merge raw findings with reachability analysis
   const findings: Finding[] = rawFindings.map((rawFinding) => {
     const reachability = reachabilityMap.get(rawFinding.id);
+
+    // Force secrets to always be reachable - they're exposed in code
+    const isSecretsFinding = alwaysReachableCategories.has(rawFinding.category);
 
     if (reachability) {
       return {
         ...rawFinding,
         reviewId,
-        isReachable: reachability.isReachable,
+        // Secrets are always reachable, otherwise use AI determination
+        isReachable: isSecretsFinding ? true : reachability.isReachable,
         reachabilityAnalysis: {
-          hasUserInputPath:
-            reachability.reachabilityAnalysis.hasUserInputPath ?? false,
+          hasUserInputPath: isSecretsFinding
+            ? false // Secrets don't need user input to be exploitable
+            : (reachability.reachabilityAnalysis.hasUserInputPath ?? false),
           dataFlowPath: reachability.reachabilityAnalysis.dataFlowPath || [],
           sanitizersInPath:
             reachability.reachabilityAnalysis.sanitizersInPath || [],
-          falsePositiveReason:
-            reachability.reachabilityAnalysis.falsePositiveReason
+          falsePositiveReason: isSecretsFinding
+            ? undefined // Clear any false positive reason for secrets
+            : reachability.reachabilityAnalysis.falsePositiveReason
         }
       };
     }
@@ -78,7 +88,7 @@ export async function runReachabilityFilter(
       reviewId,
       isReachable: true,
       reachabilityAnalysis: {
-        hasUserInputPath: true,
+        hasUserInputPath: !isSecretsFinding, // Secrets don't need user input
         dataFlowPath: [],
         sanitizersInPath: [],
         falsePositiveReason: undefined

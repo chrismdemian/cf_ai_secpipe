@@ -16,6 +16,13 @@ interface SecPipeEnv {
 }
 
 // Zod schemas for MCP tool inputs
+// Maximum code size (in characters) - ~20K tokens at 4 chars/token, leaving room for prompts
+const MAX_CODE_SIZE = 80000;
+// Estimated tokens for prompt overhead (system + user prompts in each stage)
+const PROMPT_OVERHEAD_TOKENS = 4000;
+// Model context window limit
+const MODEL_CONTEXT_LIMIT = 24000;
+
 const SubmitReviewSchema = z.object({
   code: z
     .string()
@@ -95,11 +102,60 @@ export class SecPipeAgent extends McpAgent<
         const { code, language } = args;
         const userId = this.props?.userId || "anonymous";
 
+        // Issue #1 Fix: Validate code size before submission
+        if (code.length > MAX_CODE_SIZE) {
+          const estimatedTokens = Math.ceil(code.length / 4);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "Code too large",
+                  message: `Code size (${code.length} chars, ~${estimatedTokens} tokens) exceeds maximum allowed size. The model context window is ${MODEL_CONTEXT_LIMIT} tokens. Please submit smaller code segments or split into multiple reviews.`,
+                  maxCharacters: MAX_CODE_SIZE,
+                  actualCharacters: code.length
+                })
+              }
+            ]
+          };
+        }
+
+        // Additional token estimation check
+        const estimatedCodeTokens = Math.ceil(code.length / 4);
+        if (estimatedCodeTokens + PROMPT_OVERHEAD_TOKENS > MODEL_CONTEXT_LIMIT) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "Code too large for model context",
+                  message: `Estimated tokens (~${estimatedCodeTokens}) plus prompt overhead (~${PROMPT_OVERHEAD_TOKENS}) would exceed model context limit (${MODEL_CONTEXT_LIMIT}). Please reduce code size.`,
+                  estimatedTokens: estimatedCodeTokens,
+                  maxTokens: MODEL_CONTEXT_LIMIT - PROMPT_OVERHEAD_TOKENS
+                })
+              }
+            ]
+          };
+        }
+
         const reviewId = generateId("rev");
         const now = Date.now();
 
         // Store review in KV (shared across all sessions)
-        const review = {
+        const review: {
+          id: string;
+          userId: string;
+          code: string;
+          language: string;
+          status: string;
+          currentStage: string;
+          createdAt: number;
+          updatedAt: number;
+          totalFindingsRaw: number;
+          totalFindingsFiltered: number;
+          noiseReductionPercent: number;
+          workflowInstanceId?: string;
+        } = {
           id: reviewId,
           userId,
           code,

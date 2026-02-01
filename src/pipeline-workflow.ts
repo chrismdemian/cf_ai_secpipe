@@ -124,6 +124,36 @@ export class SecurityPipelineWorkflow extends WorkflowEntrypoint<
       ...secretsFindings
     ];
 
+    // Issue #3 Fix: Deduplicate findings by location + CWE
+    // Multiple analyzers may detect the same vulnerability
+    const deduplicateFindings = (findings: RawFinding[]): RawFinding[] => {
+      const seen = new Map<string, RawFinding>();
+      const severityOrder: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4, info: 5 };
+
+      for (const finding of findings) {
+        // Create a unique key based on startLine and CWE (or title as fallback)
+        // Using only startLine since endLine can vary between analyzers
+        const key = `${finding.location.startLine}:${finding.cweId || finding.title}`;
+
+        const existing = seen.get(key);
+        if (!existing) {
+          seen.set(key, finding);
+        } else {
+          // Keep the finding with higher severity, or more specific category
+          const existingSeverity = severityOrder[existing.severity] || 5;
+          const newSeverity = severityOrder[finding.severity] || 5;
+          if (newSeverity < existingSeverity) {
+            seen.set(key, finding);
+          }
+        }
+      }
+
+      return Array.from(seen.values());
+    };
+
+    allRawFindings = deduplicateFindings(allRawFindings);
+    console.log(`Deduplicated findings: ${dependencyFindings.length + authFindings.length + injectionFindings.length + secretsFindings.length} -> ${allRawFindings.length}`);
+
     // Fallback: If no findings from AI stages, use triage riskAreas
     // Triage correctly identifies vulnerabilities, so use that data
     if (allRawFindings.length === 0 && triage.riskAreas.length > 0) {
