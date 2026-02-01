@@ -39,14 +39,17 @@ export async function runInjectionStage(
     2
   );
 
+  console.log("Injection stage: calling AI...");
   const response = await runAIAnalysis(
     env,
     INJECTION_SYSTEM_PROMPT,
     INJECTION_USER_PROMPT(code, triageContext)
   );
+  console.log("Injection stage AI response:", response.substring(0, 1000));
 
   try {
     const findings = parseJsonResponse<RawFinding[]>(response);
+    console.log("Injection stage parsed findings:", findings.length);
     if (!Array.isArray(findings)) return [];
 
     return findings.map((finding, index) => ({
@@ -56,6 +59,7 @@ export async function runInjectionStage(
     }));
   } catch (error) {
     console.error("Injection stage parse error:", error);
+    console.error("Raw response was:", response.substring(0, 500));
     return [];
   }
 }

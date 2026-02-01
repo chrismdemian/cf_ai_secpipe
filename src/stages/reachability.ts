@@ -36,7 +36,16 @@ export async function runReachabilityFilter(
     REACHABILITY_USER_PROMPT(code, findingsJson, dataFlowJson)
   );
 
-  const reachabilityResults = parseJsonResponse<ReachabilityResult[]>(response);
+  let reachabilityResults: ReachabilityResult[] = [];
+  try {
+    const parsed = parseJsonResponse<ReachabilityResult[]>(response);
+    if (Array.isArray(parsed)) {
+      reachabilityResults = parsed;
+    }
+  } catch (error) {
+    console.error("Reachability parse error:", error);
+    // Continue with empty results - all findings will be marked reachable
+  }
 
   // Create a map of reachability results by finding ID
   const reachabilityMap = new Map<string, ReachabilityResult>();

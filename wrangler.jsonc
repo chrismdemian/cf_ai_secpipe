@@ -20,11 +20,11 @@
     ]
   },
 
-  // SQLite migrations for Durable Objects
+  // Migrations for Durable Objects (using KV for storage, not SQLite)
   "migrations": [
     {
-      "tag": "v1",
-      "new_sqlite_classes": ["SecPipeAgent"]
+      "tag": "v2",
+      "new_classes": ["SecPipeAgent"]
     }
   ],
 

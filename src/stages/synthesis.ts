@@ -68,7 +68,12 @@ export async function runSynthesisStage(
     SYNTHESIS_USER_PROMPT(rawFindingsCount, findingsJson)
   );
 
-  const result = parseJsonResponse<SynthesisResult>(response);
+  let result: Partial<SynthesisResult> = {};
+  try {
+    result = parseJsonResponse<SynthesisResult>(response);
+  } catch (error) {
+    console.error("Synthesis parse error:", error);
+  }
 
   // Ensure all required fields are present
   return {

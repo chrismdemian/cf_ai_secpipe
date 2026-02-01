@@ -13,6 +13,8 @@ export async function runAIAnalysis(
   systemPrompt: string,
   userPrompt: string
 ): Promise<string> {
+  console.log("Calling AI with model:", AI_MODEL);
+
   const response = await env.AI.run(
     AI_MODEL,
     {
@@ -21,10 +23,13 @@ export async function runAIAnalysis(
         { role: "user", content: userPrompt }
       ],
       temperature: 0.1,
-      max_tokens: 8192
+      max_tokens: 4096
     },
     env.AI_GATEWAY_ID ? { gateway: { id: env.AI_GATEWAY_ID } } : undefined
   );
+
+  console.log("AI response type:", typeof response);
+  console.log("AI response:", JSON.stringify(response).substring(0, 500));
 
   // Handle different response formats from Workers AI
   if (typeof response === "string") {
@@ -49,7 +54,7 @@ export async function runAIAnalysis(
 
   // Last resort - return empty for graceful handling
   console.error("Unexpected AI response type:", typeof response);
-  return "[]"; // Return empty array for stage functions expecting JSON array
+  return "[]";
 }
 
 export function parseJsonResponse<T>(response: string): T {

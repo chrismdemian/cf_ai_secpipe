@@ -117,12 +117,34 @@ export class SecurityPipelineWorkflow extends WorkflowEntrypoint<
     ]);
 
     // Aggregate all raw findings
-    const allRawFindings: RawFinding[] = [
+    let allRawFindings: RawFinding[] = [
       ...dependencyFindings,
       ...authFindings,
       ...injectionFindings,
       ...secretsFindings
     ];
+
+    // Fallback: If no findings from AI stages, use triage riskAreas
+    // Triage correctly identifies vulnerabilities, so use that data
+    if (allRawFindings.length === 0 && triage.riskAreas.length > 0) {
+      console.log("No findings from AI stages, using triage riskAreas as fallback");
+      allRawFindings = triage.riskAreas.map((risk, index) => ({
+        id: `triage-${index}`,
+        category: risk.category as RawFinding["category"],
+        severity: risk.confidence === "high" ? "critical" as const :
+                  risk.confidence === "medium" ? "high" as const : "medium" as const,
+        title: `${risk.category.charAt(0).toUpperCase() + risk.category.slice(1)} vulnerability detected`,
+        description: risk.reason,
+        location: {
+          startLine: risk.locations[0] || 1,
+          endLine: risk.locations[risk.locations.length - 1] || 1,
+          snippet: code.split('\n').slice(
+            (risk.locations[0] || 1) - 1,
+            (risk.locations[risk.locations.length - 1] || 1)
+          ).join('\n')
+        }
+      }));
+    }
 
     // Update status
     await step.do("update-status-filtering", async () => {

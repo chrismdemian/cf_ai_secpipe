@@ -81,72 +81,8 @@ export class SecPipeAgent extends McpAgent<
   });
 
   async init() {
-    // Initialize SQL schema
-    this.initializeDatabase();
-
     // Register MCP tools
     this.registerTools();
-  }
-
-  private initializeDatabase() {
-    const sql = this.ctx.storage.sql;
-
-    // Reviews table
-    sql.exec(`
-      CREATE TABLE IF NOT EXISTS reviews (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL,
-        code TEXT NOT NULL,
-        language TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'pending',
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        workflow_instance_id TEXT,
-        total_findings_raw INTEGER DEFAULT 0,
-        total_findings_filtered INTEGER DEFAULT 0,
-        noise_reduction_percent REAL DEFAULT 0,
-        current_stage TEXT,
-        error TEXT
-      )
-    `);
-
-    // Findings table
-    sql.exec(`
-      CREATE TABLE IF NOT EXISTS findings (
-        id TEXT PRIMARY KEY,
-        review_id TEXT NOT NULL,
-        category TEXT NOT NULL,
-        severity TEXT NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT NOT NULL,
-        location_start_line INTEGER NOT NULL,
-        location_end_line INTEGER NOT NULL,
-        location_snippet TEXT NOT NULL,
-        cwe_id TEXT,
-        owasp_category TEXT,
-        is_reachable INTEGER NOT NULL DEFAULT 0,
-        has_user_input_path INTEGER NOT NULL DEFAULT 0,
-        data_flow_path TEXT,
-        sanitizers_in_path TEXT,
-        false_positive_reason TEXT,
-        approved INTEGER DEFAULT 0,
-        approved_at INTEGER
-      )
-    `);
-
-    // Remediations table
-    sql.exec(`
-      CREATE TABLE IF NOT EXISTS remediations (
-        id TEXT PRIMARY KEY,
-        finding_id TEXT NOT NULL,
-        review_id TEXT NOT NULL,
-        original_code TEXT NOT NULL,
-        fixed_code TEXT NOT NULL,
-        explanation TEXT NOT NULL,
-        diff_hunks TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      )
-    `);
   }
 
   private registerTools() {
@@ -263,44 +199,42 @@ export class SecPipeAgent extends McpAgent<
       async (args) => {
         const { reviewId, includeFiltered } = args;
 
-        const whereClause = includeFiltered
-          ? "WHERE review_id = ?"
-          : "WHERE review_id = ? AND is_reachable = 1";
+        // Read findings from KV
+        const findingsData = await this.env.OAUTH_KV.get(`findings:${reviewId}`);
+        let findings: Finding[] = [];
 
-        const findings = this.ctx.storage.sql
-          .exec(
-            `
-          SELECT * FROM findings ${whereClause} ORDER BY
-            CASE severity
-              WHEN 'critical' THEN 1
-              WHEN 'high' THEN 2
-              WHEN 'medium' THEN 3
-              WHEN 'low' THEN 4
-              ELSE 5
-            END
-        `,
-            reviewId
-          )
-          .toArray();
+        if (findingsData) {
+          try {
+            const allFindings = JSON.parse(findingsData) as Finding[];
+            findings = includeFiltered
+              ? allFindings
+              : allFindings.filter(f => f.isReachable);
 
-        // Get review stats
-        const reviewResult = this.ctx.storage.sql
-          .exec(
-            `
-          SELECT total_findings_raw, total_findings_filtered, noise_reduction_percent
-          FROM reviews WHERE id = ?
-        `,
-            reviewId
-          )
-          .toArray();
+            // Sort by severity
+            const severityOrder = { critical: 1, high: 2, medium: 3, low: 4, info: 5 };
+            findings.sort((a, b) =>
+              (severityOrder[a.severity] || 5) - (severityOrder[b.severity] || 5)
+            );
+          } catch (e) {
+            console.error("Error parsing findings:", e);
+          }
+        }
 
-        const stats = reviewResult[0] as unknown as
-          | {
-              total_findings_raw: number;
-              total_findings_filtered: number;
-              noise_reduction_percent: number;
-            }
-          | undefined;
+        // Get review stats from KV
+        const reviewData = await this.env.OAUTH_KV.get(`review:${reviewId}`);
+        let stats = null;
+        if (reviewData) {
+          try {
+            const review = JSON.parse(reviewData);
+            stats = {
+              rawFindings: review.totalFindingsRaw || 0,
+              exploitableFindings: review.totalFindingsFiltered || 0,
+              noiseReductionPercent: review.noiseReductionPercent || 0
+            };
+          } catch (e) {
+            console.error("Error parsing review:", e);
+          }
+        }
 
         return {
           content: [
@@ -308,15 +242,9 @@ export class SecPipeAgent extends McpAgent<
               type: "text" as const,
               text: JSON.stringify({
                 reviewId,
-                stats: stats
-                  ? {
-                      rawFindings: stats.total_findings_raw,
-                      exploitableFindings: stats.total_findings_filtered,
-                      noiseReductionPercent: stats.noise_reduction_percent
-                    }
-                  : null,
+                stats,
                 findingsCount: findings.length,
-                findings: findings.map((f: unknown) => this.mapFindingFromDb(f))
+                findings
               })
             }
           ]
@@ -332,17 +260,9 @@ export class SecPipeAgent extends McpAgent<
       async (args) => {
         const { reviewId, findingIds } = args;
 
-        // Get workflow instance ID
-        const reviewResult = this.ctx.storage.sql
-          .exec(
-            `
-          SELECT workflow_instance_id FROM reviews WHERE id = ?
-        `,
-            reviewId
-          )
-          .toArray();
-
-        if (reviewResult.length === 0) {
+        // Get review from KV
+        const reviewData = await this.env.OAUTH_KV.get(`review:${reviewId}`);
+        if (!reviewData) {
           return {
             content: [
               {
@@ -353,37 +273,18 @@ export class SecPipeAgent extends McpAgent<
           };
         }
 
-        const review = reviewResult[0] as unknown as {
-          workflow_instance_id: string;
-        };
-
-        // Mark findings as approved
-        const now = Date.now();
-        for (const findingId of findingIds) {
-          this.ctx.storage.sql.exec(
-            `
-            UPDATE findings SET approved = 1, approved_at = ? WHERE id = ? AND review_id = ?
-          `,
-            now,
-            findingId,
-            reviewId
-          );
-        }
+        const review = JSON.parse(reviewData);
 
         // Send approval event to workflow
         try {
-          const instance = await this.env.SECPIPE_WORKFLOW.get(
-            review.workflow_instance_id
-          );
-          // The workflow API uses {type, payload} format
-          if (instance && typeof instance.sendEvent === "function") {
-            await instance.sendEvent({
-              type: "approval",
-              payload: {
-                approved: true,
-                findingIds
-              }
-            });
+          if (review.workflowInstanceId) {
+            const instance = await this.env.SECPIPE_WORKFLOW.get(review.workflowInstanceId);
+            if (instance && typeof instance.sendEvent === "function") {
+              await instance.sendEvent({
+                type: "approval",
+                payload: { approved: true, findingIds }
+              });
+            }
           }
         } catch (e) {
           console.error("Failed to send approval event:", e);
@@ -411,15 +312,20 @@ export class SecPipeAgent extends McpAgent<
       async (args) => {
         const { reviewId, findingId } = args;
 
-        const whereClause = findingId
-          ? "WHERE review_id = ? AND finding_id = ?"
-          : "WHERE review_id = ?";
+        // Read remediations from KV
+        const remediationsData = await this.env.OAUTH_KV.get(`remediations:${reviewId}`);
+        let remediations: Remediation[] = [];
 
-        const params = findingId ? [reviewId, findingId] : [reviewId];
-
-        const remediations = this.ctx.storage.sql
-          .exec(`SELECT * FROM remediations ${whereClause}`, ...params)
-          .toArray();
+        if (remediationsData) {
+          try {
+            const allRemediations = JSON.parse(remediationsData) as Remediation[];
+            remediations = findingId
+              ? allRemediations.filter(r => r.findingId === findingId)
+              : allRemediations;
+          } catch (e) {
+            console.error("Error parsing remediations:", e);
+          }
+        }
 
         return {
           content: [
@@ -428,9 +334,7 @@ export class SecPipeAgent extends McpAgent<
               text: JSON.stringify({
                 reviewId,
                 remediationsCount: remediations.length,
-                remediations: remediations.map((r: unknown) =>
-                  this.mapRemediationFromDb(r)
-                )
+                remediations
               })
             }
           ]
@@ -446,53 +350,17 @@ export class SecPipeAgent extends McpAgent<
       async () => {
         const userId = this.props?.userId || "anonymous";
 
-        const reviews = this.ctx.storage.sql
-          .exec(
-            `
-          SELECT id, status, current_stage, total_findings_raw, total_findings_filtered,
-                 noise_reduction_percent, created_at, updated_at, error
-          FROM reviews
-          WHERE user_id = ?
-          ORDER BY created_at DESC
-          LIMIT 50
-        `,
-            userId
-          )
-          .toArray();
-
+        // Note: In demo mode with KV, we don't have user-indexed listing
+        // Return a helpful message
         return {
           content: [
             {
               type: "text" as const,
               text: JSON.stringify({
                 userId,
-                reviewsCount: reviews.length,
-                reviews: reviews.map((r: unknown) => {
-                  const review = r as {
-                    id: string;
-                    status: string;
-                    current_stage: string;
-                    total_findings_raw: number;
-                    total_findings_filtered: number;
-                    noise_reduction_percent: number;
-                    created_at: number;
-                    updated_at: number;
-                    error: string;
-                  };
-                  return {
-                    id: review.id,
-                    status: review.status,
-                    currentStage: review.current_stage,
-                    stats: {
-                      rawFindings: review.total_findings_raw,
-                      exploitableFindings: review.total_findings_filtered,
-                      noiseReductionPercent: review.noise_reduction_percent
-                    },
-                    createdAt: review.created_at,
-                    updatedAt: review.updated_at,
-                    error: review.error || undefined
-                  };
-                })
+                reviewsCount: 0,
+                reviews: [],
+                note: "In demo mode, use check_status with a specific reviewId to get review details."
               })
             }
           ]
@@ -508,51 +376,21 @@ export class SecPipeAgent extends McpAgent<
       async (args) => {
         const { reviewId1, reviewId2 } = args;
 
-        const findings1 = this.ctx.storage.sql
-          .exec(
-            `
-          SELECT * FROM findings WHERE review_id = ? AND is_reachable = 1
-        `,
-            reviewId1
-          )
-          .toArray();
+        // Read findings from KV
+        const [data1, data2] = await Promise.all([
+          this.env.OAUTH_KV.get(`findings:${reviewId1}`),
+          this.env.OAUTH_KV.get(`findings:${reviewId2}`)
+        ]);
 
-        const findings2 = this.ctx.storage.sql
-          .exec(
-            `
-          SELECT * FROM findings WHERE review_id = ? AND is_reachable = 1
-        `,
-            reviewId2
-          )
-          .toArray();
+        const findings1: Finding[] = data1 ? JSON.parse(data1).filter((f: Finding) => f.isReachable) : [];
+        const findings2: Finding[] = data2 ? JSON.parse(data2).filter((f: Finding) => f.isReachable) : [];
 
         // Simple diff based on title/location
-        const findings1Set = new Set(
-          findings1.map((f: unknown) => {
-            const finding = f as { title: string; location_start_line: number };
-            return `${finding.title}:${finding.location_start_line}`;
-          })
-        );
-        const findings2Set = new Set(
-          findings2.map((f: unknown) => {
-            const finding = f as { title: string; location_start_line: number };
-            return `${finding.title}:${finding.location_start_line}`;
-          })
-        );
+        const findings1Set = new Set(findings1.map(f => `${f.title}:${f.location.startLine}`));
+        const findings2Set = new Set(findings2.map(f => `${f.title}:${f.location.startLine}`));
 
-        const newInReview2 = findings2.filter((f: unknown) => {
-          const finding = f as { title: string; location_start_line: number };
-          return !findings1Set.has(
-            `${finding.title}:${finding.location_start_line}`
-          );
-        });
-
-        const fixedInReview2 = findings1.filter((f: unknown) => {
-          const finding = f as { title: string; location_start_line: number };
-          return !findings2Set.has(
-            `${finding.title}:${finding.location_start_line}`
-          );
-        });
+        const newInReview2 = findings2.filter(f => !findings1Set.has(`${f.title}:${f.location.startLine}`));
+        const fixedInReview2 = findings1.filter(f => !findings2Set.has(`${f.title}:${f.location.startLine}`));
 
         return {
           content: [
@@ -564,12 +402,8 @@ export class SecPipeAgent extends McpAgent<
                   review2: { id: reviewId2, findingsCount: findings2.length },
                   delta: findings2.length - findings1.length
                 },
-                newVulnerabilities: newInReview2.map((f: unknown) =>
-                  this.mapFindingFromDb(f)
-                ),
-                fixedVulnerabilities: fixedInReview2.map((f: unknown) =>
-                  this.mapFindingFromDb(f)
-                )
+                newVulnerabilities: newInReview2,
+                fixedVulnerabilities: fixedInReview2
               })
             }
           ]
@@ -582,11 +416,6 @@ export class SecPipeAgent extends McpAgent<
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // Ensure database is initialized for internal calls from workflow
-    if (url.hostname === "internal") {
-      this.initializeDatabase();
-    }
-
     if (url.pathname === "/update-status" && request.method === "POST") {
       const { reviewId, status, currentStage } = (await request.json()) as {
         reviewId: string;
@@ -594,15 +423,15 @@ export class SecPipeAgent extends McpAgent<
         currentStage?: string;
       };
 
-      this.ctx.storage.sql.exec(
-        `
-        UPDATE reviews SET status = ?, current_stage = ?, updated_at = ? WHERE id = ?
-      `,
-        status,
-        currentStage || null,
-        Date.now(),
-        reviewId
-      );
+      // Update review in KV
+      const reviewData = await this.env.OAUTH_KV.get(`review:${reviewId}`);
+      if (reviewData) {
+        const review = JSON.parse(reviewData);
+        review.status = status;
+        review.currentStage = currentStage || null;
+        review.updatedAt = Date.now();
+        await this.env.OAUTH_KV.put(`review:${reviewId}`, JSON.stringify(review));
+      }
 
       this.broadcastStatus(reviewId, status, currentStage);
       return new Response("OK");
@@ -615,53 +444,20 @@ export class SecPipeAgent extends McpAgent<
         synthesis: SynthesisResult;
       };
 
-      // Store findings
-      for (const finding of findings) {
-        this.ctx.storage.sql.exec(
-          `
-          INSERT OR REPLACE INTO findings (
-            id, review_id, category, severity, title, description,
-            location_start_line, location_end_line, location_snippet,
-            cwe_id, owasp_category, is_reachable, has_user_input_path,
-            data_flow_path, sanitizers_in_path, false_positive_reason
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-          finding.id,
-          reviewId,
-          finding.category,
-          finding.severity,
-          finding.title,
-          finding.description,
-          finding.location.startLine,
-          finding.location.endLine,
-          finding.location.snippet,
-          finding.cweId || null,
-          finding.owaspCategory || null,
-          finding.isReachable ? 1 : 0,
-          finding.reachabilityAnalysis.hasUserInputPath ? 1 : 0,
-          JSON.stringify(finding.reachabilityAnalysis.dataFlowPath || []),
-          JSON.stringify(finding.reachabilityAnalysis.sanitizersInPath || []),
-          finding.reachabilityAnalysis.falsePositiveReason || null
-        );
-      }
+      // Store findings in KV
+      await this.env.OAUTH_KV.put(`findings:${reviewId}`, JSON.stringify(findings));
 
-      // Update review stats
+      // Update review stats in KV
       const reachableCount = findings.filter((f) => f.isReachable).length;
-      this.ctx.storage.sql.exec(
-        `
-        UPDATE reviews SET
-          total_findings_raw = ?,
-          total_findings_filtered = ?,
-          noise_reduction_percent = ?,
-          updated_at = ?
-        WHERE id = ?
-      `,
-        synthesis.totalRaw,
-        reachableCount,
-        synthesis.noiseReductionPercent,
-        Date.now(),
-        reviewId
-      );
+      const reviewData = await this.env.OAUTH_KV.get(`review:${reviewId}`);
+      if (reviewData) {
+        const review = JSON.parse(reviewData);
+        review.totalFindingsRaw = synthesis.totalRaw;
+        review.totalFindingsFiltered = reachableCount;
+        review.noiseReductionPercent = synthesis.noiseReductionPercent;
+        review.updatedAt = Date.now();
+        await this.env.OAUTH_KV.put(`review:${reviewId}`, JSON.stringify(review));
+      }
 
       return new Response("OK");
     }
@@ -672,24 +468,8 @@ export class SecPipeAgent extends McpAgent<
         remediations: Remediation[];
       };
 
-      for (const rem of remediations) {
-        this.ctx.storage.sql.exec(
-          `
-          INSERT OR REPLACE INTO remediations (
-            id, finding_id, review_id, original_code, fixed_code,
-            explanation, diff_hunks, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-          rem.id,
-          rem.findingId,
-          reviewId,
-          rem.originalCode,
-          rem.fixedCode,
-          rem.explanation,
-          JSON.stringify(rem.diffHunks),
-          rem.createdAt
-        );
-      }
+      // Store remediations in KV
+      await this.env.OAUTH_KV.put(`remediations:${reviewId}`, JSON.stringify(remediations));
 
       return new Response("OK");
     }
@@ -715,71 +495,5 @@ export class SecPipeAgent extends McpAgent<
     if (typeof this.broadcast === "function") {
       this.broadcast(message);
     }
-  }
-
-  private mapFindingFromDb(row: unknown): Partial<Finding> {
-    const f = row as {
-      id: string;
-      category: string;
-      severity: string;
-      title: string;
-      description: string;
-      location_start_line: number;
-      location_end_line: number;
-      location_snippet: string;
-      cwe_id: string;
-      owasp_category: string;
-      is_reachable: number;
-      has_user_input_path: number;
-      data_flow_path: string;
-      sanitizers_in_path: string;
-      false_positive_reason: string;
-    };
-
-    return {
-      id: f.id,
-      category: f.category as Finding["category"],
-      severity: f.severity as Finding["severity"],
-      title: f.title,
-      description: f.description,
-      location: {
-        startLine: f.location_start_line,
-        endLine: f.location_end_line,
-        snippet: f.location_snippet
-      },
-      cweId: f.cwe_id || undefined,
-      owaspCategory: f.owasp_category || undefined,
-      isReachable: f.is_reachable === 1,
-      reachabilityAnalysis: {
-        hasUserInputPath: f.has_user_input_path === 1,
-        dataFlowPath: JSON.parse(f.data_flow_path || "[]"),
-        sanitizersInPath: JSON.parse(f.sanitizers_in_path || "[]"),
-        falsePositiveReason: f.false_positive_reason || undefined
-      }
-    };
-  }
-
-  private mapRemediationFromDb(row: unknown): Partial<Remediation> {
-    const r = row as {
-      id: string;
-      finding_id: string;
-      review_id: string;
-      original_code: string;
-      fixed_code: string;
-      explanation: string;
-      diff_hunks: string;
-      created_at: number;
-    };
-
-    return {
-      id: r.id,
-      findingId: r.finding_id,
-      reviewId: r.review_id,
-      originalCode: r.original_code,
-      fixedCode: r.fixed_code,
-      explanation: r.explanation,
-      diffHunks: JSON.parse(r.diff_hunks || "[]"),
-      createdAt: r.created_at
-    };
   }
 }
