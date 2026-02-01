@@ -88,7 +88,7 @@ export function generateId(prefix: string = ""): string {
 }
 
 // Safely extract array from AI response (handles both bare arrays and wrapped objects)
-export function extractArrayFromResponse<T>(parsed: unknown, possibleKeys: string[] = ['findings', 'results', 'data', 'items', 'remediations']): T[] {
+export function extractArrayFromResponse<T>(parsed: unknown, possibleKeys: string[] = ['response', 'findings', 'results', 'data', 'items', 'remediations']): T[] {
   if (Array.isArray(parsed)) {
     return parsed as T[];
   }
