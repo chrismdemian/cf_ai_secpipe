@@ -1,4 +1,4 @@
-# cf_ai_SecPipe
+# SecPipe
 
 An AI-powered security code review application built on Cloudflare's developer platform. Uses **Llama 3.3 70B** to analyze code for vulnerabilities, with intelligent **reachability filtering** to eliminate false positives.
 
