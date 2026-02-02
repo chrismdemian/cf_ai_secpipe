@@ -4,7 +4,9 @@ An AI-powered security code review application built on Cloudflare's developer p
 
 ## Live Demo
 
-**Deployed URL:** https://secpipe.chrismdemian.workers.dev/mcp
+**Landing Page:** https://secpipe.chrismdemian.workers.dev
+
+**MCP Endpoint:** https://secpipe.chrismdemian.workers.dev/mcp
 
 Try it in the [Cloudflare AI Playground](https://playground.ai.cloudflare.com/) - see [Try It Out](#try-it-out) section below.
 
@@ -200,31 +202,30 @@ Remediation Generated:
 ## Project Structure
 
 ```
-src/
-├── index.ts              # Worker entry, routing
-├── secpipe-agent.ts      # MCP Agent with 7 tools
-├── pipeline-workflow.ts  # Durable async pipeline
-├── github-handler.ts     # OAuth authentication
-├── types.ts              # TypeScript interfaces
-├── prompts/              # AI system prompts
-│   ├── triage.ts
-│   ├── dependency.ts
-│   ├── auth.ts
-│   ├── injection.ts
-│   ├── secrets.ts
-│   ├── reachability.ts   # Key differentiator
-│   ├── synthesis.ts
-│   └── remediation.ts
-└── stages/               # Pipeline stage implementations
-    ├── triage.ts
-    ├── dependency.ts
-    ├── auth-analyzer.ts
-    ├── injection.ts
-    ├── secrets.ts
-    ├── reachability.ts   # Filters false positives
-    ├── synthesis.ts
-    ├── remediation.ts
-    └── utils.ts          # AI helper functions
+├── index.html            # Vite entry point
+├── vite.config.ts        # Vite + Cloudflare config
+├── wrangler.jsonc        # Cloudflare Workers config
+├── src/                  # React Frontend
+│   ├── App.tsx           # Landing page component
+│   ├── main.tsx          # React entry point
+│   ├── index.css         # Tailwind + custom styles
+│   ├── components/       # UI components (MagicUI, etc.)
+│   └── lib/              # Utilities
+└── worker/               # Cloudflare Worker Backend
+    ├── index.ts          # Worker entry, routing
+    ├── secpipe-agent.ts  # MCP Agent with 7 tools
+    ├── pipeline-workflow.ts  # Durable async pipeline
+    ├── github-handler.ts # OAuth authentication
+    ├── types.ts          # TypeScript interfaces
+    ├── prompts/          # AI system prompts
+    │   ├── triage.ts
+    │   ├── injection.ts
+    │   ├── reachability.ts   # Key differentiator
+    │   └── ...
+    └── stages/           # Pipeline stage implementations
+        ├── triage.ts
+        ├── reachability.ts   # Filters false positives
+        └── ...
 ```
 
 ## License
